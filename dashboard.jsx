@@ -277,6 +277,7 @@ const ESPN_LEAGUES = [
 
 function SportsTicker({ settings }) {
   const [events, setEvents] = useState([]);
+  const [news, setNews] = useState([]);
   const fav = useMemo(() =>
     settings.favTeams.split(",").map(s => s.trim().toLowerCase()).filter(Boolean),
     [settings.favTeams]);
@@ -284,29 +285,50 @@ function SportsTicker({ settings }) {
   const refresh = useCallback(async () => {
     const leagues = ESPN_LEAGUES.filter(l => settings.sportsLeagues.includes(l.id));
     const out = [];
+    const newsOut = [];
     await Promise.all(leagues.map(async (lg) => {
       try {
         const url = "https://site.api.espn.com/apis/site/v2/sports/" + lg.path + "/scoreboard";
         const res = await fetch(url);
-        if (!res.ok) return;
-        const j = await res.json();
-        (j.events || []).forEach(ev => {
-          const comp = ev.competitions && ev.competitions[0];
-          if (!comp) return;
-          const home = comp.competitors.find(c => c.homeAway === "home");
-          const away = comp.competitors.find(c => c.homeAway === "away");
-          if (!home || !away) return;
-          const status = ev.status && ev.status.type;
-          out.push({
-            id: lg.id + "-" + ev.id,
-            league: lg.label,
-            home: { name: home.team.abbreviation || home.team.shortDisplayName, score: home.score },
-            away: { name: away.team.abbreviation || away.team.shortDisplayName, score: away.score },
-            state: status ? status.state : "pre",
-            short: status ? status.shortDetail : "",
-            link: ev.links && ev.links[0] && ev.links[0].href
+        if (res.ok) {
+          const j = await res.json();
+          (j.events || []).forEach(ev => {
+            const comp = ev.competitions && ev.competitions[0];
+            if (!comp) return;
+            const home = comp.competitors.find(c => c.homeAway === "home");
+            const away = comp.competitors.find(c => c.homeAway === "away");
+            if (!home || !away) return;
+            const status = ev.status && ev.status.type;
+            out.push({
+              id: lg.id + "-" + ev.id,
+              league: lg.label,
+              home: { name: home.team.abbreviation || home.team.shortDisplayName, score: home.score },
+              away: { name: away.team.abbreviation || away.team.shortDisplayName, score: away.score },
+              state: status ? status.state : "pre",
+              short: status ? status.shortDetail : "",
+              link: ev.links && ev.links[0] && ev.links[0].href
+            });
           });
-        });
+        }
+      } catch {}
+      try {
+        const newsUrl = "https://site.api.espn.com/apis/site/v2/sports/" + lg.path + "/news?limit=4";
+        const nRes = await fetch(newsUrl);
+        if (nRes.ok) {
+          const nj = await nRes.json();
+          (nj.articles || []).slice(0, 3).forEach((art, idx) => {
+            const link = (art.links && art.links.web && art.links.web.href)
+                       || (art.links && art.links.mobile && art.links.mobile.href);
+            const headline = (art.headline || art.title || "").trim();
+            if (!headline) return;
+            newsOut.push({
+              id: lg.id + "-news-" + (art.id || idx),
+              league: lg.label,
+              headline: headline.length > 120 ? headline.slice(0, 117) + "…" : headline,
+              link
+            });
+          });
+        }
       } catch {}
     }));
     const order = { in: 0, pre: 1, post: 2 };
@@ -319,23 +341,42 @@ function SportsTicker({ settings }) {
       });
     }
     setEvents(out);
+    setNews(newsOut);
   }, [settings.sportsLeagues, fav]);
 
   useEffect(() => { refresh(); const t = setInterval(refresh, 60000); return () => clearInterval(t); }, [refresh]);
 
-  if (!events.length) {
+  const tickerItems = useMemo(() => {
+    const games = events.map(e => ({ ...e, _kind: "game" }));
+    const headlines = news.map(n => ({ ...n, _kind: "news" }));
+    const merged = [];
+    let gi = 0, ni = 0;
+    while (gi < games.length || ni < headlines.length) {
+      if (gi < games.length) merged.push(games[gi++]);
+      if (gi < games.length) merged.push(games[gi++]);
+      if (ni < headlines.length) merged.push(headlines[ni++]);
+    }
+    return merged;
+  }, [events, news]);
+
+  if (!tickerItems.length) {
     return (
       <div className="ticker"><span className="label">Sports</span>
-        <div className="muted" style={{padding: "0 8px"}}>No games in selected leagues today.</div>
+        <div className="muted" style={{padding: "0 8px"}}>No games or headlines in selected leagues right now.</div>
       </div>
     );
   }
-  const items = events.concat(events);
+  const items = tickerItems.concat(tickerItems);
   return (
     <div className="ticker">
       <span className="label">Live · Sports</span>
       <div className="ticker-track">
-        {items.map((e, i) => (
+        {items.map((e, i) => e._kind === "news" ? (
+          <a className="ticker-item news" key={e.id + "-" + i} href={e.link} target="_blank" rel="noreferrer">
+            <span className="news-tag">{e.league} News</span>
+            <span className="headline">{e.headline}</span>
+          </a>
+        ) : (
           <a className="ticker-item" key={e.id + "-" + i} href={e.link} target="_blank" rel="noreferrer">
             <span className="team">{e.league}:</span>
             <span className="team">{e.away.name}</span>
@@ -494,7 +535,8 @@ function NewsCard({ settings }) {
         if (!r.ok) throw new Error("NewsAPI " + r.status);
         const j = await r.json();
         setItems((j.articles || []).map(a => ({
-          title: a.title, source: a.source && a.source.name, url: a.url, when: a.publishedAt
+          title: a.title, source: a.source && a.source.name,
+          url: a.url, when: a.publishedAt, image: a.urlToImage
         })));
       } else {
         const idsRes = await fetch("https://hacker-news.firebaseio.com/v0/topstories.json");
@@ -503,7 +545,9 @@ function NewsCard({ settings }) {
           fetch("https://hacker-news.firebaseio.com/v0/item/" + id + ".json").then(r => r.json())
         ));
         setItems(stories.filter(Boolean).map(s => ({
-          title: s.title, source: "Hacker News", url: s.url || ("https://news.ycombinator.com/item?id=" + s.id), when: s.time * 1000
+          title: s.title, source: "Hacker News",
+          url: s.url || ("https://news.ycombinator.com/item?id=" + s.id),
+          when: s.time * 1000, image: null
         })));
       }
     } catch (e) { setErr(e.message); }
@@ -519,11 +563,17 @@ function NewsCard({ settings }) {
       </h2>
       {loading && !items.length && <div className="muted"><span className="spinner"/> Loading…</div>}
       {err && <div className="error">{err}</div>}
-      <div className="list">
+      <div className="news-list">
         {items.map((n, i) => (
           <a className="news-item" key={i} href={n.url} target="_blank" rel="noreferrer">
-            <div className="src">{n.source} · <span className="when">{fmtRelative(n.when)}</span></div>
-            <div className="title">{n.title}</div>
+            {n.image && (
+              <img className="news-img" src={n.image} alt="" loading="lazy"
+                   onError={(e) => { e.currentTarget.style.display = "none"; }}/>
+            )}
+            <div className="news-body">
+              <div className="src">{n.source} · <span className="when">{fmtRelative(n.when)}</span></div>
+              <div className="title">{n.title}</div>
+            </div>
           </a>
         ))}
       </div>
@@ -709,47 +759,82 @@ function HandwritingCanvas({ onSave, onClose, theme }) {
 }
 
 // =====================================================================
-// NOTES PANEL
+// NOTES PANEL — card grid that opens an editor modal
 // =====================================================================
 function NotesPanel({ data, update, theme }) {
-  const [activeId, setActiveId] = useState(() => (data.notes[0] && data.notes[0].id) || null);
-  const [showCanvas, setShowCanvas] = useState(false);
-  const editorRef = useRef(null);
-
-  const active = data.notes.find(n => n.id === activeId) || null;
-
-  useEffect(() => {
-    if (editorRef.current && active) {
-      if (editorRef.current.innerHTML !== active.html) {
-        editorRef.current.innerHTML = active.html || "";
-      }
-    } else if (editorRef.current) {
-      editorRef.current.innerHTML = "";
-    }
-  }, [activeId]);
+  const [editingId, setEditingId] = useState(null);
 
   function newNote() {
     const id = "n_" + Math.random().toString(36).slice(2, 9);
     const note = { id, title: "Untitled", html: "", updatedAt: Date.now() };
     update(d => ({ ...d, notes: [note, ...d.notes] }));
-    setActiveId(id);
+    setEditingId(id);
   }
-  function delNote() {
-    if (!active) return;
-    if (!confirm("Delete this note?")) return;
-    update(d => ({ ...d, notes: d.notes.filter(n => n.id !== active.id) }));
-    setActiveId(null);
+  function delNote(id) {
+    update(d => ({ ...d, notes: d.notes.filter(n => n.id !== id) }));
+    if (editingId === id) setEditingId(null);
   }
-  function patch(fields) {
-    if (!active) return;
+  function patch(id, fields) {
     update(d => ({
       ...d,
-      notes: d.notes.map(n => n.id === active.id ? { ...n, ...fields, updatedAt: Date.now() } : n)
+      notes: d.notes.map(n => n.id === id ? { ...n, ...fields, updatedAt: Date.now() } : n)
     }));
   }
-  function onEditorInput() {
-    patch({ html: editorRef.current.innerHTML });
-  }
+
+  const editing = data.notes.find(n => n.id === editingId) || null;
+  const sorted = data.notes.slice().sort((a, b) => b.updatedAt - a.updatedAt);
+
+  return (
+    <div className="card span-7 row-3">
+      <h2>Notes <span className="badge">{data.notes.length}</span>
+        <div className="actions">
+          <button className="icon-btn primary" onClick={newNote}>＋ New note</button>
+        </div>
+      </h2>
+      <div className="notes-grid">
+        <button className="note-card empty-card" onClick={newNote}>＋ New note</button>
+        {sorted.map(n => {
+          const preview = (n.html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+          return (
+            <button key={n.id} className="note-card" onClick={() => setEditingId(n.id)}>
+              <div className="note-card-title">{n.title || "Untitled"}</div>
+              <div className="note-card-preview">{preview || "Empty note"}</div>
+              <div className="note-card-meta">{fmtRelative(n.updatedAt)}</div>
+            </button>
+          );
+        })}
+      </div>
+      {editing && (
+        <NoteEditorModal
+          note={editing}
+          theme={theme}
+          onPatch={(fields) => patch(editing.id, fields)}
+          onDelete={() => { if (confirm("Delete this note?")) { delNote(editing.id); } }}
+          onClose={() => setEditingId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function NoteEditorModal({ note, theme, onPatch, onDelete, onClose }) {
+  const editorRef = useRef(null);
+  const [showCanvas, setShowCanvas] = useState(false);
+
+  useEffect(() => {
+    if (editorRef.current) {
+      editorRef.current.innerHTML = note.html || "";
+      setTimeout(() => { try { editorRef.current && editorRef.current.focus(); } catch {} }, 30);
+    }
+  }, [note.id]);
+
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function onEditorInput() { onPatch({ html: editorRef.current.innerHTML }); }
   function exec(cmd, value) {
     document.execCommand(cmd, false, value);
     editorRef.current.focus();
@@ -762,60 +847,36 @@ function NotesPanel({ data, update, theme }) {
   }
 
   return (
-    <div className="card span-7 row-3">
-      <h2>Notes <span className="badge">{data.notes.length}</span>
-        <div className="actions">
-          <button className="icon-btn" onClick={newNote}>＋ New</button>
-          {active && <button className="icon-btn" onClick={() => setShowCanvas(true)}>✎ Handwrite</button>}
-          {active && <button className="icon-btn" onClick={delNote} title="Delete">🗑</button>}
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal modal-note" onClick={e => e.stopPropagation()}>
+        <header>
+          <input className="note-title-input" value={note.title}
+                 onChange={e => onPatch({ title: e.target.value })}
+                 placeholder="Untitled"/>
+          <button className="icon-btn" onClick={onDelete} title="Delete">Delete</button>
+          <button className="icon-btn primary" onClick={onClose}>Done</button>
+        </header>
+        <div className="notes-toolbar">
+          <button className="icon-btn" onClick={() => exec("bold")}><b>B</b></button>
+          <button className="icon-btn" onClick={() => exec("italic")}><i>I</i></button>
+          <button className="icon-btn" onClick={() => exec("underline")}><u>U</u></button>
+          <button className="icon-btn" onClick={() => exec("insertUnorderedList")}>• List</button>
+          <button className="icon-btn" onClick={() => exec("insertOrderedList")}>1. List</button>
+          <button className="icon-btn" onClick={() => exec("formatBlock", "h2")}>H</button>
+          <button className="icon-btn" onClick={() => exec("formatBlock", "blockquote")}>❝</button>
+          <button className="icon-btn" onClick={() => setShowCanvas(true)}>✎ Draw</button>
         </div>
-      </h2>
-      <div className="notes">
-        <div className="notes-side">
-          <div className="notes-list">
-            {data.notes.length === 0 && <div className="empty" style={{padding: 14}}>No notes yet.</div>}
-            {data.notes.slice().sort((a,b) => b.updatedAt - a.updatedAt).map(n => (
-              <div key={n.id} className={"note-row " + (n.id === activeId ? "active" : "")}
-                   onClick={() => setActiveId(n.id)}>
-                <div className="nt">{n.title || "Untitled"}</div>
-                <div className="np">{(n.html || "").replace(/<[^>]+>/g, "").slice(0, 60)}</div>
-                <div className="nd">{fmtRelative(n.updatedAt)}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="notes-main">
-          {active ? (
-            <>
-              <input className="notes-title" value={active.title}
-                     onChange={e => patch({ title: e.target.value })}
-                     placeholder="Title"/>
-              <div className="notes-toolbar">
-                <button className="icon-btn" onClick={() => exec("bold")}><b>B</b></button>
-                <button className="icon-btn" onClick={() => exec("italic")}><i>I</i></button>
-                <button className="icon-btn" onClick={() => exec("underline")}><u>U</u></button>
-                <button className="icon-btn" onClick={() => exec("insertUnorderedList")}>• List</button>
-                <button className="icon-btn" onClick={() => exec("insertOrderedList")}>1. List</button>
-                <button className="icon-btn" onClick={() => exec("formatBlock", "h2")}>H</button>
-                <button className="icon-btn" onClick={() => exec("formatBlock", "blockquote")}>❝</button>
-                <button className="icon-btn" onClick={() => setShowCanvas(true)}>✎ Draw</button>
-              </div>
-              <div ref={editorRef} className="notes-editor"
-                   contentEditable suppressContentEditableWarning
-                   onInput={onEditorInput}/>
-            </>
-          ) : (
-            <div className="empty" style={{padding: 14}}>Select a note or create a new one.</div>
-          )}
-        </div>
+        <div ref={editorRef} className="notes-editor"
+             contentEditable suppressContentEditableWarning
+             onInput={onEditorInput}/>
+        {showCanvas && (
+          <HandwritingCanvas
+            theme={theme}
+            onSave={(d) => { insertImage(d); setShowCanvas(false); }}
+            onClose={() => setShowCanvas(false)}
+          />
+        )}
       </div>
-      {showCanvas && (
-        <HandwritingCanvas
-          theme={theme}
-          onSave={(d) => { insertImage(d); setShowCanvas(false); }}
-          onClose={() => setShowCanvas(false)}
-        />
-      )}
     </div>
   );
 }
@@ -1171,6 +1232,63 @@ function SettingsModal({ settings, setSettings, theme, setTheme, onClose, signed
 }
 
 // =====================================================================
+// LINK VIEWER (in-app browser modal)
+// =====================================================================
+function LinkViewerModal({ url, onClose }) {
+  const [loaded, setLoaded] = useState(false);
+  const [blocked, setBlocked] = useState(false);
+  const hostname = useMemo(() => {
+    try { return new URL(url).hostname.replace(/^www\./, ""); }
+    catch { return url; }
+  }, [url]);
+
+  useEffect(() => {
+    const t = setTimeout(() => { if (!loaded) setBlocked(true); }, 4500);
+    return () => clearTimeout(t);
+  }, [url, loaded]);
+
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal modal-browser" onClick={e => e.stopPropagation()}>
+        <header>
+          <span className="browser-host">{hostname}</span>
+          <a className="icon-btn" href={url} target="_blank" rel="noreferrer"
+             data-external="1" onClick={(e) => e.stopPropagation()}>Open ↗</a>
+          <button className="icon-btn primary" onClick={onClose}>Close</button>
+        </header>
+        <div className="iframe-wrap">
+          {!blocked && (
+            <iframe src={url}
+              referrerPolicy="no-referrer"
+              sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-popups-to-escape-sandbox"
+              onLoad={() => setLoaded(true)}/>
+          )}
+          {!loaded && !blocked && (
+            <div className="iframe-status">
+              <span className="spinner"/>
+              <div className="muted">Loading {hostname}…</div>
+            </div>
+          )}
+          {blocked && (
+            <div className="iframe-status">
+              <div className="blocked-title">{hostname} doesn't allow embedding</div>
+              <div className="muted">Many news sites block themselves from being shown inside other apps.</div>
+              <a className="icon-btn primary" href={url} target="_blank" rel="noreferrer" data-external="1">Open in browser ↗</a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
 // APP
 // =====================================================================
 function App() {
@@ -1180,7 +1298,36 @@ function App() {
   const [signedIn, setSignedIn] = useState(false);
   const [account, setAccount] = useState(null);
   const [authError, setAuthError] = useState(null);
+  const [linkViewer, setLinkViewer] = useState(null);
   const now = useClock();
+
+  useEffect(() => {
+    function onClick(e) {
+      if (e.defaultPrevented) return;
+      if (e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      let el = e.target;
+      while (el && el !== document.body) {
+        if (el.tagName === "A") break;
+        el = el.parentElement;
+      }
+      if (!el || el.tagName !== "A") return;
+      if (el.getAttribute("data-external") === "1") return;
+      const href = el.getAttribute("href") || el.href;
+      if (!href || !/^https?:\/\//i.test(href)) return;
+      try {
+        const u = new URL(href);
+        if (u.origin === window.location.origin) return;
+        if (u.hostname.includes("login.microsoftonline.com")) return;
+        if (u.hostname.includes("login.live.com")) return;
+        if (u.hostname.includes("login.windows.net")) return;
+      } catch { return; }
+      e.preventDefault();
+      setLinkViewer(href);
+    }
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, []);
 
   useEffect(() => {
     if (!settings.msClientId || !window.msal) return;
@@ -1271,6 +1418,10 @@ function App() {
           onSignIn={signIn} onSignOut={signOut}
           onForceSync={synced.forceSync} lastSync={synced.lastSync} syncing={synced.syncing}
         />
+      )}
+
+      {linkViewer && (
+        <LinkViewerModal url={linkViewer} onClose={() => setLinkViewer(null)}/>
       )}
     </div>
   );
