@@ -216,11 +216,15 @@ body::before {
   pointer-events: none;
 }
 .ticker-track {
-  display: flex; gap: 32px;
+  display: flex; gap: 36px;
   white-space: nowrap;
-  animation: ticker 95s linear infinite;
+  animation: ticker 240s linear infinite;
 }
 .ticker-track:hover { animation-play-state: paused; }
+.ticker:active .ticker-track { animation-play-state: paused; }
+@media (max-width: 720px) {
+  .ticker-track { animation-duration: 320s; gap: 28px; }
+}
 .ticker-item {
   display: inline-flex; gap: 8px; align-items: baseline;
   text-decoration: none; color: var(--fg-mute);

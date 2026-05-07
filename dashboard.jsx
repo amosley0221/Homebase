@@ -1237,15 +1237,38 @@ function SettingsModal({ settings, setSettings, theme, setTheme, onClose, signed
 function LinkViewerModal({ url, onClose }) {
   const [loaded, setLoaded] = useState(false);
   const [blocked, setBlocked] = useState(false);
+  const iframeRef = useRef(null);
   const hostname = useMemo(() => {
     try { return new URL(url).hostname.replace(/^www\./, ""); }
     catch { return url; }
   }, [url]);
 
+  function handleLoad() {
+    // X-Frame-Options / CSP blocked iframes still fire `load`. Detect by
+    // sniffing contentDocument: cross-origin success throws; same-origin
+    // empty/about:blank means the browser refused to render the page.
+    setTimeout(() => {
+      const f = iframeRef.current;
+      if (!f) return;
+      try {
+        const doc = f.contentDocument;
+        if (doc !== null) {
+          const empty = !doc.body
+            || doc.body.children.length === 0
+            || (doc.URL === "about:blank" && doc.body.innerHTML.trim() === "");
+          if (empty) { setBlocked(true); return; }
+        }
+      } catch {
+        // Cross-origin access denied — actual page loaded successfully.
+      }
+      setLoaded(true);
+    }, 60);
+  }
+
   useEffect(() => {
-    const t = setTimeout(() => { if (!loaded) setBlocked(true); }, 4500);
+    const t = setTimeout(() => { if (!loaded && !blocked) setBlocked(true); }, 3500);
     return () => clearTimeout(t);
-  }, [url, loaded]);
+  }, [loaded, blocked]);
 
   useEffect(() => {
     function onKey(e) { if (e.key === "Escape") onClose(); }
@@ -1264,10 +1287,10 @@ function LinkViewerModal({ url, onClose }) {
         </header>
         <div className="iframe-wrap">
           {!blocked && (
-            <iframe src={url}
+            <iframe ref={iframeRef} src={url}
               referrerPolicy="no-referrer"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-popups-to-escape-sandbox"
-              onLoad={() => setLoaded(true)}/>
+              onLoad={handleLoad}/>
           )}
           {!loaded && !blocked && (
             <div className="iframe-status">
@@ -1277,9 +1300,12 @@ function LinkViewerModal({ url, onClose }) {
           )}
           {blocked && (
             <div className="iframe-status">
-              <div className="blocked-title">{hostname} doesn't allow embedding</div>
-              <div className="muted">Many news sites block themselves from being shown inside other apps.</div>
-              <a className="icon-btn primary" href={url} target="_blank" rel="noreferrer" data-external="1">Open in browser ↗</a>
+              <div className="blocked-title">Can't preview {hostname}</div>
+              <div className="muted" style={{maxWidth: 380}}>
+                This site blocks itself from being shown inside other apps. Tap below to open it in your browser.
+              </div>
+              <a className="icon-btn primary" href={url} target="_blank" rel="noreferrer"
+                 data-external="1" onClick={onClose}>Open in browser ↗</a>
             </div>
           )}
         </div>
