@@ -4,7 +4,7 @@
 //   - Same-origin assets (JSX, CSS, icons): stale-while-revalidate.
 //   - Cross-origin (CDNs, APIs): stale-while-revalidate in a separate cache.
 
-const VERSION = "v3";
+const VERSION = "v4";
 const SHELL_CACHE = `homebase-shell-${VERSION}`;
 const RUNTIME_CACHE = `homebase-runtime-${VERSION}`;
 
