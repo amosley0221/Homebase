@@ -3,6 +3,7 @@ services:
     runtime: static
     name: homebase
     staticPublishPath: .
+    autoDeploy: true
     pullRequestPreviewsEnabled: true
     headers:
       - path: /sw.js
